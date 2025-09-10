@@ -1,36 +1,16 @@
 """
 BSNL QoS Certificate Generator (Streamlit)
 ========================================
-Download‑only Streamlit app to create QoS certificates (two per A4 page)
+Download-only Streamlit app to create QoS certificates (two per A4 page)
 for each TIP under a Broadband Manager (BBM).
-
-Core flow
----------
-1. **Login** – BBM mobile + 4‑digit PIN.
-2. **Certificate form** – date range, TIP dropdown, penalty Yes/No + amount.
-3. Repeat until all TIPs done → **Finish & Download**.
-4. Combined PDF shows auto‑wrapped body sentence, penalty line,
-   BBM signature+name (bottom‑left) and MT signature+name + "Manager(MT)" (bottom‑right).
-
-Expected files
---------------
-project/
-├─ qos_streamlit_app.py  ← this script
-├─ bbm_data.csv  (columns: mobile, bbm_name, tip_name, mt_name (opt), pin (opt))
-└─ signatures/
-    ├─ mt_sign.b64
-    ├─ 9891055443.b64
-    ├─ 9493432333.b64
-    └─ 9441131108.b64
 """
 
 from __future__ import annotations
 import os
 import base64
-import warnings
 from datetime import datetime, date
 from io import BytesIO
-from typing import Dict, List
+from typing import Dict
 
 import pandas as pd
 import streamlit as st
@@ -54,7 +34,7 @@ PIN_MAP = {
     "9441131108": "2675",
 }
 
-# --------------- UTIL: LOAD A BASE‑64 IMAGE ------------
+# --------------- UTIL: LOAD A BASE-64 IMAGE ------------
 
 def load_b64_image(path: str) -> BytesIO | None:
     if not os.path.isfile(path):
@@ -81,7 +61,7 @@ def load_roster() -> Dict[str, Dict]:
         except UnicodeDecodeError:
             continue
     else:
-        st.error("Unable to decode roster CSV – save it as UTF‑8.")
+        st.error("Unable to decode roster CSV – save it as UTF-8.")
         st.stop()
 
     users: Dict[str, Dict] = {}
@@ -124,10 +104,14 @@ def wrap_text(c: Canvas, text: str, x: float, y: float, max_w: float, font: str 
     return y
 
 
-def draw_certificate(c: Canvas, cert: Dict, top_cm: float):
+def draw_certificate(c: Canvas, cert: Dict, top_cm: float, gen_ts: str):
     # Title
     c.setFont("Helvetica-Bold", 16)
     c.drawCentredString(A4[0] / 2, top_cm * cm, "QoS Certificate")
+
+    # --- Timestamp beside title (top-right corner) ---
+    c.setFont("Helvetica", 10)
+    c.drawRightString(A4[0] - 2 * cm, top_cm * cm, gen_ts)
 
     # -------- BODY ---------
     tip_raw = str(cert.get("tip_name", "")).replace("_", " ").strip()
@@ -145,6 +129,7 @@ def draw_certificate(c: Canvas, cert: Dict, top_cm: float):
 
     # Penalty line
     penalty = "NIL" if not cert["penalty_yes"] else f"₹{cert['penalty_amount']:.2f}"
+    c.setFont("Helvetica", 12)
     c.drawString(2 * cm, new_y - 1 * cm, f"Penalty: {penalty}")
 
     # ---------- SIGNATURES ----------
@@ -163,19 +148,19 @@ def draw_certificate(c: Canvas, cert: Dict, top_cm: float):
     c.setFont("Helvetica", 12)
     c.drawString(2 * cm, sig_y - 0.6 * cm, cert["bbm_name"].upper())
 
-            # Manager(MT) signature (right of BBM) using base64 image
+    # --- Timestamp below BBM signature ---
+    c.setFont("Helvetica-Oblique", 9)
+    c.drawString(2 * cm, sig_y - 1.2 * cm, f"Generated: {gen_ts}")
+
+    # Manager(MT) signature (right of BBM)
     if MT_IMG:
-        # Compute BBM block width
         bbm_block_w = 4 * cm if cert.get("bbm_img") else stringWidth(cert["bbm_name"].upper(), "Helvetica", 12)
         gap = 2 * cm
         mt_x = 4 * cm + bbm_block_w + gap
-        # align bottom of MT signature image to just above the baseline
-        # compute height preserving aspect ratio
         reader = ImageReader(MT_IMG)
         iw, ih = reader.getSize()
         draw_w = 4 * cm
         draw_h = draw_w * (ih / iw)
-        # lower the MT signature slightly by subtracting extra offset
         img_y = sig_y - draw_h - 4 * cm
         c.drawImage(reader,
             mt_x,
@@ -184,9 +169,8 @@ def draw_certificate(c: Canvas, cert: Dict, top_cm: float):
             preserveAspectRatio=True,
             mask="auto",
         )
-    # no separate Manager(MT) text since signature image includes title
 
-# -------------------- STREAMLIT APP --------------------# -------------------- STREAMLIT APP --------------------
+# -------------------- STREAMLIT APP --------------------
 
 def main():
     st.title("QoS Certificate Generator")
@@ -225,7 +209,6 @@ def main():
     if pen_yes:
         pen_amt = st.number_input("Penalty amount (₹)", min_value=0.0, step=0.01)
 
-    # Disable Add certificate when no TIPs
     add_disabled = not bool(st.session_state.todo_tips)
     if st.button("Add certificate", disabled=add_disabled):
         cert = {
@@ -244,33 +227,35 @@ def main():
         st.success("Certificate added.")
         st.rerun()
 
-    # ---------- FINISH & DOWNLOAD ---------- ----------
-if st.session_state.get("todo_tips") is not None and not st.session_state.todo_tips:
-    if st.button("Finish & Download PDF"):
-        buffer = BytesIO()
-        c = Canvas(buffer, pagesize=A4)
+    # ---------- FINISH & DOWNLOAD ----------
+    if st.session_state.get("todo_tips") is not None and not st.session_state.todo_tips:
+        if st.button("Finish & Download PDF"):
+            buffer = BytesIO()
+            c = Canvas(buffer, pagesize=A4)
 
-        # Draw each certificate on a new page
-        for cert in st.session_state.get("certs", []):
-            draw_certificate(c, cert, 27)  # fixed top position
-            c.showPage()
+            # fixed generation timestamp for all certificates
+            gen_ts = datetime.now().strftime("%d-%m-%Y %H:%M")
 
-        c.save()
-        pdf_data = buffer.getvalue()
-        buffer.close()
+            for cert in st.session_state.get("certs", []):
+                draw_certificate(c, cert, 27, gen_ts)
+                c.showPage()
 
-        st.download_button(
-            "Download PDF",
-            pdf_data,
-            file_name=f"QoS_Certificates_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-            mime="application/pdf"
-        )
-        st.balloons()
-        st.session_state.clear()
-        st.stop()
+            c.save()
+            pdf_data = buffer.getvalue()
+            buffer.close()
+
+            st.download_button(
+                "Download PDF",
+                pdf_data,
+                file_name=f"QoS_Certificates_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                mime="application/pdf"
+            )
+            st.balloons()
+            st.session_state.clear()
+            st.stop()
 
     # ---------- LOGOUT ----------
-if st.button("Logout"):
+    if st.button("Logout"):
         st.session_state.clear()
         st.rerun()
 
